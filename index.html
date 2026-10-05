@@ -1,1 +1,282 @@
 
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Ghost FX</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#080d16;color:#e8eef8;font:14px Arial,sans-serif}
+header{padding:18px;border-bottom:1px solid #263247;display:flex;justify-content:space-between;align-items:center}
+h1{margin:0;font-size:23px;letter-spacing:2px}
+h1 span{color:#25d9a0}
+main{padding:15px;max-width:900px;margin:auto}
+.panel{background:#101827;border:1px solid #263247;border-radius:12px;padding:15px;margin-bottom:14px}
+label{display:block;color:#91a1b8;font-size:12px;margin-bottom:7px}
+select,button{background:#182439;color:white;border:1px solid #34445c;padding:12px;border-radius:8px;font-size:14px}
+select{width:100%}
+.controls{display:grid;grid-template-columns:2fr 1fr;gap:10px}
+button{cursor:pointer}
+button.active{background:#116d57;border-color:#25d9a0}
+#status{color:#f6c66a;font-size:12px}
+.price{font-size:27px;font-weight:bold;margin:12px 0}
+.muted{color:#91a1b8;font-size:12px}
+#chart{width:100%;height:300px;display:block}
+.signal{font-size:23px;font-weight:bold;margin:10px 0}
+.buy{color:#25d9a0}.sell{color:#ff687c}.wait{color:#f6c66a}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.metric{background:#0b1220;padding:12px;border-radius:8px}
+.metric strong{display:block;font-size:19px;margin-top:6px}
+footer{padding:20px;text-align:center;color:#74849c;font-size:11px}
+</style>
+</head>
+<body>
+<header>
+  <h1>GHOST <span>FX</span></h1>
+  <span id="status">Connecting…</span>
+</header>
+<main>
+  <section class="panel">
+    <div class="controls">
+      <div>
+        <label>MARKET</label>
+        <select id="market">
+          <option value="frxEURUSD">EUR/USD</option>
+          <option value="frxGBPUSD">GBP/USD</option>
+          <option value="frxUSDJPY">USD/JPY</option>
+          <option value="frxAUDUSD">AUD/USD</option>
+          <option value="frxUSDCAD">USD/CAD</option>
+          <option value="frxUSDCHF">USD/CHF</option>
+          <option value="frxNZDUSD">NZD/USD</option>
+          <option value="frxXAUUSD">XAU/USD (Gold)</option>
+        </select>
+      </div>
+      <div>
+        <label>TIMEFRAME</label>
+        <select id="tf">
+          <option value="60">M1</option>
+          <option value="300">M5</option>
+        </select>
+      </div>
+    </div>
+    <div class="price" id="price">--</div>
+    <div class="muted" id="updated">Waiting for market data</div>
+  </section>
+
+  <section class="panel">
+    <label>LIVE MARKET CHART · CANDLESTICKS</label>
+    <canvas id="chart"></canvas>
+    <div class="muted">EMA 50 · EMA 200 · RSI 14</div>
+  </section>
+
+  <section class="panel">
+    <label>GHOST FX SIGNAL</label>
+    <div id="signal" class="signal wait">WAIT</div>
+    <div id="reason" class="muted">Waiting for candle data and indicator confirmation.</div>
+  </section>
+
+  <section class="panel">
+    <div class="grid">
+      <div class="metric"><span class="muted">EMA 50</span><strong id="ema50">--</strong></div>
+      <div class="metric"><span class="muted">EMA 200</span><strong id="ema200">--</strong></div>
+      <div class="metric"><span class="muted">RSI 14</span><strong id="rsi">--</strong></div>
+      <div class="metric"><span class="muted">Closed candles</span><strong id="count">0</strong></div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <label>RECENT SIGNAL HISTORY</label>
+    <div id="history" class="muted">No confirmed signals yet.</div>
+  </section>
+  <button id="reconnect" style="width:100%">Reconnect market feed</button>
+  <p class="muted">Signals are experimental, not financial advice. Verify prices against your Deriv MT5 account. This website does not place trades.</p>
+</main>
+<footer>GHOST FX · MARKET SCANNER</footer>
+
+<script>
+const $ = id => document.getElementById(id);
+const wsUrl = "wss://ws.derivws.com/websockets/v3?app_id=1089";
+let ws, candles=[], liveCandle=null, lastBucket=null, requestId=0;
+let history=[], reconnectTimer, manualClose=false;
+
+function status(s){$("status").textContent=s}
+function send(obj){
+  if(ws && ws.readyState===WebSocket.OPEN) ws.send(JSON.stringify(obj));
+}
+function connect(){
+  manualClose=true;
+  if(ws) ws.close();
+  manualClose=false;
+  clearTimeout(reconnectTimer);
+  candles=[];liveCandle=null;lastBucket=null;
+  $("price").textContent="--";
+  $("count").textContent="0";
+  $("signal").textContent="WAIT";
+  $("signal").className="signal wait";
+  $("reason").textContent="Loading historical candles…";
+  status("Connecting…");
+  try{
+    ws=new WebSocket(wsUrl);
+    ws.onopen=()=>{
+      status("Loading candles…");
+      send({
+        ticks_history:$("market").value,
+        end:"latest",count:500,
+        style:"candles",granularity:Number($("tf").value),
+        req_id:++requestId
+      });
+    };
+    ws.onmessage=e=>{
+      let d;
+      try{d=JSON.parse(e.data)}catch{return}
+      if(d.error){
+        status("Feed error");
+        $("reason").textContent=d.error.message||"Market request failed. Try another symbol.";
+        return;
+      }
+      if(d.candles){
+        candles=d.candles.map(c=>({
+          epoch:Number(c.epoch),open:+c.open,high:+c.high,
+          low:+c.low,close:+c.close
+        }));
+        if(candles.length){
+          lastBucket=candles[candles.length-1].epoch;
+          liveCandle=candles[candles.length-1];
+          render();
+          evaluate(false);
+        }
+        send({ticks:$("market").value,subscribe:1,req_id:++requestId});
+        status("Live feed connected");
+      }
+      if(d.tick){
+        const t=d.tick;
+        const epoch=Number(t.epoch);
+        const value=Number(t.quote);
+        if(!Number.isFinite(value))return;
+        $("price").textContent=value.toFixed(
+          String(t.quote).includes(".") ? String(t.quote).split(".")[1].length : 2
+        );
+        $("updated").textContent="Last tick: "+new Date(epoch*1000).toLocaleTimeString();
+        const sec=Number($("tf").value);
+        const bucket=Math.floor(epoch/sec)*sec;
+        if(lastBucket===null){
+          lastBucket=bucket;
+          liveCandle={epoch:bucket,open:value,high:value,low:value,close:value};
+          candles.push(liveCandle);
+        }else if(bucket===lastBucket){
+          if(!liveCandle){
+            liveCandle={epoch:bucket,open:value,high:value,low:value,close:value};
+            candles.push(liveCandle);
+          }else{
+            liveCandle.high=Math.max(liveCandle.high,value);
+            liveCandle.low=Math.min(liveCandle.low,value);
+            liveCandle.close=value;
+          }
+        }else if(bucket>lastBucket){
+          if(liveCandle) evaluate(true);
+          lastBucket=bucket;
+          liveCandle={epoch:bucket,open:value,high:value,low:value,close:value};
+          candles.push(liveCandle);
+          if(candles.length>600)candles.shift();
+        }
+        render();
+      }
+      if(d.ohlc && d.ohlc.close){
+        // Tick-built candles are used for the chart in this starter version.
+      }
+    };
+    ws.onerror=()=>status("Connection error");
+    ws.onclose=()=>{
+      if(!manualClose){
+        status("Disconnected — retrying");
+        reconnectTimer=setTimeout(connect,4000);
+      }
+    };
+  }catch(e){status("Could not connect")}
+}
+
+function ema(values,period){
+  if(values.length<period)return null;
+  const k=2/(period+1);
+  let v=values.slice(0,period).reduce((a,b)=>a+b,0)/period;
+  for(let i=period;i<values.length;i++)v=values[i]*k+v*(1-k);
+  return v;
+}
+function rsi(values,period=14){
+  if(values.length<period+1)return null;
+  let gain=0,loss=0;
+  for(let i=values.length-period;i<values.length;i++){
+    const diff=values[i]-values[i-1];
+    if(diff>0)gain+=diff;else loss-=diff;
+  }
+  if(loss===0)return 100;
+  return 100-100/(1+gain/loss);
+}
+function evaluate(closed){
+  const cs=candles.map(c=>c.close);
+  const e50=ema(cs,50),e200=ema(cs,200),rv=rsi(cs,14);
+  $("count").textContent=String(cs.length);
+  $("ema50").textContent=e50===null?"Need more candles":e50.toFixed(5);
+  $("ema200").textContent=e200===null?"Need more candles":e200.toFixed(5);
+  $("rsi").textContent=rv===null?"--":rv.toFixed(1);
+  if(e50===null||e200===null||rv===null){
+    $("signal").textContent="WAIT";
+    $("signal").className="signal wait";
+    $("reason").textContent="Waiting for enough candle data to calculate EMA 50, EMA 200 and RSI 14.";
+    return;
+  }
+  const n=cs.length;
+  const p50=ema(cs.slice(0,-1),50),p200=ema(cs.slice(0,-1),200);
+  let sig="WAIT",why="No fresh EMA crossover confirmed.";
+  if(p50!==null&&p200!==null&&p50<=p200&&e50>e200&&rv>50){
+    sig="BUY";why="Fresh bullish EMA crossover with RSI above 50.";
+  }else if(p50!==null&&p200!==null&&p50>=p200&&e50<e200&&rv<50){
+    sig="SELL";why="Fresh bearish EMA crossover with RSI below 50.";
+  }
+  $("signal").textContent=sig;
+  $("signal").className="signal "+sig.toLowerCase();
+  $("reason").textContent=why+(closed?" Checked at candle close.":"");
+  if(closed&&sig!=="WAIT"){
+    history.unshift(new Date().toLocaleTimeString()+" · "+$("market").selectedOptions[0].text+" · M"+(Number($("tf").value)/60)+" · "+sig);
+    history=history.slice(0,10);
+    $("history").innerHTML=history.map(x=>"<div style='padding:7px 0;border-bottom:1px solid #263247'>"+x+"</div>").join("");
+  }
+}
+function render(){
+  const canvas=$("chart"),ctx=canvas.getContext("2d");
+  const w=canvas.clientWidth,h=300,dpr=window.devicePixelRatio||1;
+  canvas.width=w*dpr;canvas.height=h*dpr;ctx.scale(dpr,dpr);
+  ctx.fillStyle="#0b1220";ctx.fillRect(0,0,w,h);
+  for(let y=30;y<h;y+=45){
+    ctx.strokeStyle="#1c293b";ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(w,y);ctx.stroke();
+  }
+  const data=candles.slice(-65);
+  if(data.length<2){
+    ctx.fillStyle="#91a1b8";ctx.fillText("Waiting for market candles…",15,30);return;
+  }
+  const min=Math.min(...data.map(c=>c.low)),max=Math.max(...data.map(c=>c.high));
+  const range=max-min||0.0001,pad=18;
+  const y=v=>pad+(max-v)/(range)*(h-pad*2);
+  const step=w/data.length,cw=Math.max(2,step*.58);
+  data.forEach((c,i)=>{
+    const x=i*step+step/2;
+    const up=c.close>=c.open;
+    ctx.strokeStyle=up?"#25d9a0":"#ff687c";
+    ctx.fillStyle=ctx.strokeStyle;
+    ctx.beginPath();ctx.moveTo(x,y(c.high));ctx.lineTo(x,y(c.low));ctx.stroke();
+    const top=y(Math.max(c.open,c.close)),bottom=y(Math.min(c.open,c.close));
+    ctx.fillRect(x-cw/2,top,cw,Math.max(1,bottom-top));
+  });
+  ctx.fillStyle="#91a1b8";ctx.font="11px Arial";
+  ctx.fillText(max.toFixed(5),5,13);
+  ctx.fillText(min.toFixed(5),5,h-5);
+}
+$("market").addEventListener("change",connect);
+$("tf").addEventListener("change",connect);
+$("reconnect").addEventListener("click",connect);
+window.addEventListener("resize",render);
+connect();
+</script>
+</body>
+</html>
