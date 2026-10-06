@@ -105,7 +105,7 @@
 
   <div class="header">
     <h1>👻 Ghost FX</h1>
-    <p>EMA 50 • EMA 200 • RSI 14 • M1</p>
+    <p>M1 Scalping Scanner • EMA 50 • EMA 200 • RSI 14</p>
   </div>
 
   <div class="container">
@@ -113,91 +113,99 @@
     <button onclick="scanMarket()">SCAN MARKET</button>
 
     <div class="status" id="status">
-      Ready to scan
+      Starting Ghost FX...
     </div>
 
     <div id="results"></div>
 
   </div>
 
-<script>
+  <script>
 
-const API =
-"https://ghost-fx-api.olatundeolasunkanmi28.workers.dev";
+    const API =
+      "https://ghost-fx-api.olatundeolasunkanmi28.workers.dev";
 
-async function scanMarket() {
+    async function scanMarket() {
 
-  const status = document.getElementById("status");
-  const results = document.getElementById("results");
+      const status = document.getElementById("status");
+      const results = document.getElementById("results");
 
-  status.innerText = "Scanning markets...";
-  results.innerHTML = "";
+      status.innerText = "Scanning markets...";
 
-  try {
+      try {
 
-    const response = await fetch(API + "/scan");
-    const data = await response.json();
+        const response = await fetch(API + "/scan");
+        const data = await response.json();
 
-    if (!data.success) {
-      throw new Error("Scanner error");
+        if (!data.success) {
+          throw new Error("Scanner error");
+        }
+
+        results.innerHTML = "";
+
+        status.innerText =
+          "Last scan: " + new Date().toLocaleTimeString();
+
+        data.results.forEach(item => {
+
+          const card = document.createElement("div");
+
+          card.className = "card";
+
+          let signalClass = "wait";
+
+          if (item.signal === "BUY") {
+            signalClass = "buy";
+          }
+
+          if (item.signal === "SELL") {
+            signalClass = "sell";
+          }
+
+          card.innerHTML = `
+
+            <div class="pair">
+              ${item.symbol}
+            </div>
+
+            <div class="price">
+              Price: ${item.price ?? "N/A"}
+            </div>
+
+            <div class="data">
+              EMA 50: ${item.ema50 ?? "N/A"}<br>
+              EMA 200: ${item.ema200 ?? "N/A"}<br>
+              RSI 14: ${item.rsi14 ?? "N/A"}
+            </div>
+
+            <div class="signal ${signalClass}">
+              ${item.signal}
+            </div>
+
+          `;
+
+          results.appendChild(card);
+
+        });
+
+      } catch (error) {
+
+        status.innerText =
+          "Connection error — try scanning again.";
+
+      }
+
     }
 
-    status.innerText =
-      "Last scan: " + new Date().toLocaleTimeString();
+    // Initial scan
+    scanMarket();
 
-    data.results.forEach(item => {
+    // Automatic M1 scan every 60 seconds
+    setInterval(() => {
+      scanMarket();
+    }, 60000);
 
-      const card = document.createElement("div");
-      card.className = "card";
-
-      let signalClass = "wait";
-
-      if (item.signal === "BUY") {
-        signalClass = "buy";
-      }
-
-      if (item.signal === "SELL") {
-        signalClass = "sell";
-      }
-
-      card.innerHTML = `
-
-        <div class="pair">
-          ${item.symbol}
-        </div>
-
-        <div class="price">
-          Price: ${item.price ?? "N/A"}
-        </div>
-
-        <div class="data">
-          EMA 50: ${item.ema50 ?? "N/A"}<br>
-          EMA 200: ${item.ema200 ?? "N/A"}<br>
-          RSI 14: ${item.rsi14 ?? "N/A"}
-        </div>
-
-        <div class="signal ${signalClass}">
-          ${item.signal}
-        </div>
-
-      `;
-
-      results.appendChild(card);
-
-    });
-
-  } catch (error) {
-
-    status.innerText =
-      "Unable to connect to Ghost FX scanner.";
-
-  }
-
-}
-
-scanMarket();
-
-</script>
+  </script>
 
 </body>
 </html>
